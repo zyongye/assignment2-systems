@@ -7,6 +7,7 @@ All changes we make to the assignment code or PDF will be documented in this fil
 ### Added
 - code: Include tests for logsumexp in flash forward implementation
 - handout: Clarify interface for flash autograd function
+- code: Test causal=True for forward as well as backward
 
 ## [1.0.0] - 2024-04-16
 

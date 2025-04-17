@@ -40,9 +40,9 @@ def _make_attn_inputs(device=None):
     return q, k, v, do
 
 
-def _test_flash_forward_pass(impl, device="cpu"):
+def _test_flash_forward_pass(impl, device="cpu", is_causal=False):
     q, k, v, _do = _make_attn_inputs(device)
-    o = impl(q, k, v)
+    o = impl(q, k, v, is_causal)
 
     # Extract L from the saved tensors
     assert o.grad_fn.saved_tensors is not None, "No saved tensors found in the output tensor. Make sure your autograd forward is saving them using ctx.save_for_backward."
@@ -51,7 +51,7 @@ def _test_flash_forward_pass(impl, device="cpu"):
     assert len(maybe_ls) == 1, f"Expected one tensor of shape {q.shape[0], q.shape[1]} in saved tensors, but found {len(maybe_ls)}. The tests require you to save exactly one tensor of this shape, corresponding to the log-sum-exp of the attention scores."
     l = maybe_ls[0]
 
-    o_ref, l_ref = _attention_and_lse(q, k, v)
+    o_ref, l_ref = _attention_and_lse(q, k, v, is_causal)
 
     torch.testing.assert_close(o, o_ref, rtol=1e-2, atol=1e-2)
     torch.testing.assert_close(l, l_ref, rtol=1e-2, atol=1e-2)
@@ -65,8 +65,9 @@ def test_flash_forward_pass_pytorch():
     not torch.cuda.is_available(),
     reason="A GPU must be available to run Triton kernels",
 )
-def test_flash_forward_pass_triton():
-    _test_flash_forward_pass(get_flashattention_autograd_function_triton().apply, device="cuda")
+@pytest.mark.parametrize("is_causal", [False, True])
+def test_flash_forward_pass_triton(is_causal):
+    _test_flash_forward_pass(get_flashattention_autograd_function_triton().apply, device="cuda", is_causal=is_causal)
 
 
 
