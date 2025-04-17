@@ -2,7 +2,13 @@
 
 All changes we make to the assignment code or PDF will be documented in this file.
 
-## [1.0.0] - yyyy-mm-dd
+
+## [1.0.1] - 2024-04-17
+### Added
+- code: Include tests for logsumexp in flash forward implementation
+- handout: Clarify interface for flash autograd function
+
+## [1.0.0] - 2024-04-16
 
 ### Added
 - handout/code: add FlashAttention2
