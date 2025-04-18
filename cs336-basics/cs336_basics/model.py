@@ -167,12 +167,8 @@ class BasicsTransformerLM(nn.Module):
             evenly divisible by `num_heads`.
         d_ff: int
             Dimensionality of the feed-forward inner layer (section 3.3).
-        remove_rmsnorm: Optional[bool], default is None
-            If true, do not apply RMSNorm in the model.
-            Cannot be used with `use_post_norm`.
-        use_post_norm: Optional[bool], default is None
-            If true, use post-norm formulation of Transformer block.
-            Cannot be used with `remove_rmsnorm`.
+        rope_theta: float
+            The theta value for the RoPE positional encoding.
 
     Returns:
         FloatTensor of shape (batch size, sequence_length, vocab_size) with the
@@ -187,68 +183,49 @@ class BasicsTransformerLM(nn.Module):
         num_layers: int,
         num_heads: int,
         d_ff: int,
-        remove_rmsnorm: bool | None = None,
-        use_post_norm: bool | None = None,
-        remove_rope: bool = False,
-        rope_theta: float | None = None,
-        ffn_type: str | None = None,
+        rope_theta: float,
     ):
-        if sum(map(bool, [remove_rmsnorm, use_post_norm])) > 1:
-            raise ValueError(
-                "Only at most one of `remove_rmsnorm`, `use_post_norm` can be set to True."
-            )
-
         # Store the model configuration for serialization / deserialization
         self.config = {
             k: v for k, v in locals().items() if k != "self" and not (k.startswith("__") and k.endswith("__"))
         }
         super().__init__()
+        self.vocab_size = vocab_size
         self.context_length = context_length
         self.d_model = d_model
-        self.token_embeddings = Embedding(vocab_size, d_model, )
+        self.token_embeddings = Embedding(vocab_size, d_model)
         d_head = d_model // num_heads
-        self.positional_encoder = RotaryEmbedding(context_length, d_head, rope_theta) if rope_theta is not None else None
-        self.remove_rmsnorm = remove_rmsnorm
-        self.use_post_norm = use_post_norm
-
-        if remove_rmsnorm:
-            block_cls = functools.partial(TransformerBlock, remove_rmsnorm=remove_rmsnorm)
-        elif use_post_norm:
-            block_cls = PostNormTransformerBlock
-        else:
-            block_cls = TransformerBlock
-
+        self.positional_encoder = RotaryEmbedding(
+            context_length=context_length,
+            dim=d_head,
+            theta=rope_theta
+        )
         self.layers = nn.ModuleList(
             [
-                block_cls(
+                TransformerBlock(
                     d_model=d_model,
                     num_heads=num_heads,
                     d_ff=d_ff,
-                    ffn_type=ffn_type,
-                    positional_encoder=self.positional_encoder if not remove_rope else None,
+                    positional_encoder=self.positional_encoder,
                 )
                 for _ in range(num_layers)
             ]
         )
-        if not self.remove_rmsnorm:
-            self.ln_final = RMSNorm(d_model)
+        self.ln_final = RMSNorm(d_model)
         self.lm_head = Linear(d_model, vocab_size)
-        # Tie the weights, since the paper mentions that "we share the same weight
-        # matrix between the two embedding layers and the pre-softmax linear transformation"
-        # self.lm_head.weight = self.token_embeddings.weight
+
         # report number of parameters
         logger.info(f"number of non-embedding parameters: {self.get_num_params() / 1e6:.2f}M")
 
     def get_num_params(self, non_embedding=True):
         """
         Return the number of parameters in the model.
-        For non-embedding count (default), the position embeddings get subtracted.
-        The token embeddings would too, except due to the parameter sharing these
-        params are actually used as weights in the final layer, so we include them.
+        For non-embedding count (default), the lm_head parameters get subtracted.
         """
         n_params = sum(p.numel() for p in self.parameters())
-        # if non_embedding:
-        #     n_params -= self.position_embeddings.weight.numel()
+        if non_embedding:
+            n_params -= self.lm_head.weight.numel()
+
         return n_params
 
     def forward(self, x: Int[Tensor, " ... sequence_length"]) -> Float[Tensor, " ... sequence_length vocab_size"]:
@@ -261,24 +238,19 @@ class BasicsTransformerLM(nn.Module):
             distribution for each token.
         """
         _, sequence_length = x.size()
-        # (batch size, sequence_length, d_model)
-        # NOTE: paper mentions "In the embedding layers, we multiply those
-        # weights by sqrt(d_model)", but we aren't doing that here.
-        embedded_tokens = self.token_embeddings(x)
 
         # (batch size, sequence_length, d_model)
-        # x = self.positional_encoder(embedded_tokens, positions)
-        x = embedded_tokens
+        x = self.token_embeddings(x)
 
         for layer in self.layers:
             # (batch size, sequence_length, d_model)
             x = layer(x)
+
         # (batch size, sequence_length, d_model)
-        if not self.remove_rmsnorm:
-            x = self.ln_final(x)
+        x = self.ln_final(x)
+
         # (batch size, sequence_length, vocab_size)
-        logits = self.lm_head(x)
-        return logits
+        return self.lm_head(x)
 
     @torch.no_grad()
     def generate(
@@ -306,6 +278,7 @@ class BasicsTransformerLM(nn.Module):
         """
         if x.dim() == 1:
             x = x.unsqueeze(0)
+            
         original_sequence_length = x.size(-1)
         for _ in range(max_new_tokens):
             # Take the last `context_length` tokens if the input is
@@ -354,58 +327,6 @@ class BasicsTransformerLM(nn.Module):
         return model
 
 
-class PostNormTransformerBlock(nn.Module):
-    """A single post-norm Transformer layer.
-
-    Args:
-        d_model: int
-            The dimensionality of the model embeddings and sublayer outputs.
-        num_heads: int
-            Number of heads to use in multi-headed attention. `d_model` must be
-            evenly divisible by `num_heads`.
-        d_ff: int
-            Dimensionality of the feed-forward inner layer (section 3.3).
-        remove_rmsnorm: Optional[bool], default is None
-            If true, do not apply RMSNorm in the Transformer block.
-
-    Returns:
-        FloatTensor of shape `(batch_size, sequence_length, d_model)`.
-    """
-
-    def __init__(
-        self,
-        d_model: int,
-        num_heads: int,
-        d_ff: int,
-    ):
-        super().__init__()
-        self.attn = CausalMultiHeadSelfAttention(
-            d_model=d_model,
-            num_heads=num_heads,
-        )
-        self.ffn = SwiGLU(d_model=d_model, d_ff=d_ff)
-        self.ln1 = RMSNorm(d_model)
-        self.ln2 = RMSNorm(d_model)
-
-    def forward(self, x: torch.Tensor):
-        """
-        Args:
-            x: FloatTensor of shape `(batch_size, sequence_length, d_model)`.
-                The input to process with the Transformer block.
-
-        Returns:
-            FloatTensor of shape `(batch_size, sequence_length, d_model)`.
-        """
-        # Apply the multi-head self-attention sublayer
-        x_attn = self.attn(x)
-        attn_sublayer_output = self.ln1(x + x_attn)
-
-        # Apply the feed-forward sublayer
-        x_ffn = self.ffn(attn_sublayer_output)
-        ffn_sublayer_output = self.ln2(attn_sublayer_output + x_ffn)
-        return ffn_sublayer_output
-
-
 class TransformerBlock(nn.Module):
     """A single Transformer layer.
 
@@ -420,8 +341,8 @@ class TransformerBlock(nn.Module):
             evenly divisible by `num_heads`.
         d_ff: int
             Dimensionality of the feed-forward inner layer (section 3.3).
-        remove_rmsnorm: Optional[bool], default is None
-            If true, do not apply RMSNorm in the Transformer block.
+        positional_encoder: RotaryEmbedding
+            The RoPE module to use.
 
     Returns:
         FloatTensor of shape `(batch_size, sequence_length, d_model)`.
@@ -432,9 +353,7 @@ class TransformerBlock(nn.Module):
         d_model: int,
         num_heads: int,
         d_ff: int,
-        positional_encoder: RotaryEmbedding | None,
-        remove_rmsnorm: float | None = None,
-        ffn_type: str | None = None,
+        positional_encoder: RotaryEmbedding,
     ):
         super().__init__()
         self.attn = CausalMultiHeadSelfAttention(
@@ -443,10 +362,8 @@ class TransformerBlock(nn.Module):
             positional_encoder=positional_encoder,
         )
         self.ffn = SwiGLU(d_model=d_model, d_ff=d_ff)
-        self.remove_rmsnorm = remove_rmsnorm
-        if not self.remove_rmsnorm:
-            self.ln1 = RMSNorm(d_model)
-            self.ln2 = RMSNorm(d_model)
+        self.ln1 = RMSNorm(d_model)
+        self.ln2 = RMSNorm(d_model)
 
     def forward(self, x: torch.Tensor):
         """
@@ -460,14 +377,13 @@ class TransformerBlock(nn.Module):
         # NOTE: this is a pre-norm Transformer, and differs from the original
         # description in the paper.
         # Apply the multi-head self-attention sublayer
-        x_attn = self.attn(x if self.remove_rmsnorm else self.ln1(x))
+        x_attn = self.attn(self.ln1(x))
         attn_sublayer_output = x + x_attn
 
         # Apply the feed-forward sublayer
-        x_ffn = self.ffn(attn_sublayer_output if self.remove_rmsnorm else self.ln2(attn_sublayer_output))
+        x_ffn = self.ffn(self.ln2(attn_sublayer_output))
         ffn_sublayer_output = attn_sublayer_output + x_ffn
         return ffn_sublayer_output
-
 
 
 class SwiGLU(nn.Module):
@@ -479,19 +395,6 @@ class SwiGLU(nn.Module):
 
     def forward(self, x):
         return self.w2(silu(self.w1(x)) * self.w3(x))
-
-
-class SiLUFFN(nn.Module):
-    def __init__(self, d_model: int, d_ff: int):
-        super().__init__()
-        self.w1 = Linear(d_model, d_ff)
-        self.w2 = Linear(d_ff, d_model)
-
-    def forward(self, x):
-        x = self.w1(x)
-        x = silu(x)
-        x = self.w2(x)
-        return x
 
 
 def scaled_dot_product_attention(
@@ -534,7 +437,7 @@ class CausalMultiHeadSelfAttention(nn.Module):
 
     This function implements section 3.2.2 of the Transformer paper. In particular,
     given an input tensor of shape `(batch_size, sequence_length, d_model)`, we project
-    it to create queries, keys, and values, and then perform causl multi-headed attention with
+    it to create queries, keys, and values, and then perform causal multi-headed attention with
     those queries, keys, and values.
 
     Args:
@@ -543,6 +446,8 @@ class CausalMultiHeadSelfAttention(nn.Module):
         num_heads: int
             Number of heads to use in multi-headed attention. `d_model` must be
             evenly divisible by `num_heads`.
+        positional_encoder: RotaryEmbedding
+            The RoPE module to use.
 
     Returns:
         Tensor of shape `(batch_size, sequence_length, d_model)`.
@@ -552,7 +457,7 @@ class CausalMultiHeadSelfAttention(nn.Module):
         self,
         d_model: int,
         num_heads: int,
-        positional_encoder: RotaryEmbedding | None,
+        positional_encoder: RotaryEmbedding,
     ):
         super().__init__()
         assert d_model % num_heads == 0
@@ -568,7 +473,7 @@ class CausalMultiHeadSelfAttention(nn.Module):
 
         self.output_proj = Linear(self.num_heads * self.d_v, self.d_model)
 
-        self.positional_encoder: RotaryEmbedding | None = positional_encoder  # RoPE
+        self.positional_encoder = positional_encoder  # RoPE
 
     def forward(self, x: Float[Tensor, " ... seq d_k"], token_positions: Int[Tensor, " ... seq"] | None = None) -> Float[Tensor, " ... seq d_v"]:
         """
@@ -592,20 +497,19 @@ class CausalMultiHeadSelfAttention(nn.Module):
             for X in (Q, K, V)
         )  # fmt: skip
 
-        if self.positional_encoder:
-            if token_positions is None:
-                token_positions = einx.rearrange("seq -> b... seq", torch.arange(sequence_length, device=x.device), b=b)
+        if token_positions is None:
+            token_positions = einx.rearrange("seq -> b... seq", torch.arange(sequence_length, device=x.device), b=[1] * len(b))
 
-            # Duplicate token positions for each head
-            token_positions = rearrange(token_positions, "... seq -> ... 1 seq")
+        # Duplicate token positions for each head
+        token_positions = rearrange(token_positions, "... seq -> ... 1 seq")
 
-            Q = self.positional_encoder(Q, token_positions)
-            K = self.positional_encoder(K, token_positions)
+        Q = self.positional_encoder(Q, token_positions)
+        K = self.positional_encoder(K, token_positions)
 
         # Construct causal mask
         seq = torch.arange(sequence_length, device=x.device)
-        qi = einx.rearrange('query -> b... query 1', seq, b=b)
-        kj = einx.rearrange('key   -> b... 1   key', seq, b=b)
+        qi = einx.rearrange('query -> b... 1 query 1', seq, b=[1] * len(b))
+        kj = einx.rearrange('key   -> b... 1 1   key', seq, b=[1] * len(b))
         causal_mask = qi >= kj  # (query, key)
 
         # Shape: (..., num_heads, sequence_length, d_k)
@@ -618,7 +522,6 @@ class CausalMultiHeadSelfAttention(nn.Module):
         # Apply the output projection
         output = self.output_proj(attn_output)
         return output
-
 
 def silu(x: torch.Tensor):
     return x * torch.sigmoid(x)
