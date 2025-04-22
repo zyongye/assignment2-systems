@@ -11,6 +11,9 @@ All changes we make to the assignment code or PDF will be documented in this fil
 - handout: fix math error and explanation for flash backward savings
 - handout: change parameters used for attention benchmarking to be sensible
 
+### Removed
+- handout: some memory benchmarking that is incompatible with modern PyTorch
+
 ## [1.0.1] - 2024-04-17
 ### Added
 - code: Include tests for logsumexp in flash forward implementation
