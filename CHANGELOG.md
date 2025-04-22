@@ -2,14 +2,20 @@
 
 All changes we make to the assignment code or PDF will be documented in this file.
 
+## [1.0.2] - 2024-04-22
+### Added
+- handout: clarify interface for flash autograd function
+
+### Fixed
+- handout: fix small notation issues in the flash algorithm
+- handout: fix math error and explanation for flash backward savings
+- handout: change parameters used for attention benchmarking to be sensible
 
 ## [1.0.1] - 2024-04-17
 ### Added
 - code: Include tests for logsumexp in flash forward implementation
 - handout: Clarify interface for flash autograd function
 - code: Test causal=True for forward as well as backward
-- code: Simplify BasicsTransformerLM (remove flags and logic for A1 ablations)
-- code: In BasicsTransformerLM, broadcast causal mask over all heads
 
 ## [1.0.0] - 2024-04-16
 
