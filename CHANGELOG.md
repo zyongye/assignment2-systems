@@ -5,6 +5,7 @@ All changes we make to the assignment code or PDF will be documented in this fil
 ## [1.0.2] - 2024-04-22
 ### Added
 - handout: clarify interface for flash autograd function
+- handout: clarify submission for attention benchmarking
 
 ### Fixed
 - handout: fix small notation issues in the flash algorithm
