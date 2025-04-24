@@ -2,6 +2,13 @@
 
 All changes we make to the assignment code or PDF will be documented in this file.
 
+## [1.0.3] - 2024-04-24
+### Fixed
+- handout: `memory_profiling` (b) should sweep over context length, not model size
+- handout: keyword argument in FA2 Triton starter code from `tile_shape` -> `block_shape`
+- handout: minor typo in `flash_backward` problem statement
+- handout: launch all-gather example using `uv run`
+
 ## [1.0.2] - 2024-04-22
 ### Added
 - handout: clarify interface for flash autograd function
