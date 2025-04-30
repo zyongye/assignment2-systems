@@ -5,6 +5,7 @@ All changes we make to the assignment code or PDF will be documented in this fil
 ## [1.0.4] - 2025-04-27
 
 ### Fixed
+- handout: details for leaderboard submission
 - handout: replace Pytorch profiler with Nsight for DDP
 
 ### Added
