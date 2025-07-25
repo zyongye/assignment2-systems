@@ -2,6 +2,13 @@
 
 All changes we make to the assignment code or PDF will be documented in this file.
 
+## [1.0.5] - 2025-07-03
+### Fixed
+- code: typos regarding FlashAttention2 in the adapters
+
+### Added
+- code: .python-version constraint for Python 3.12
+
 ## [1.0.4] - 2025-04-27
 
 ### Fixed
