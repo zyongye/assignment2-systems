@@ -32,7 +32,6 @@ def tiled_fa_torch(
             for j in range(T_KV):
                 k_tile = K[h, j * KV_TILE: (j + 1) * KV_TILE, :]
                 v_tile = V[h, j * KV_TILE: (j + 1) * KV_TILE, :]
-                print(k_tile[0])
 
                 qk = einsum(q_tile, k_tile, "sq d, sk d -> sq sk")
                 qk *= scale
@@ -66,8 +65,20 @@ class FlashAttention2Torch(torch.autograd.Function):
     
     @staticmethod
     def backward(ctx, grad_out):
-        raise NotImplementedError
+        Q, K, V, O, L = ctx.saved_tensors
+        D = torch.sum(O * grad_out, dim=-1, keepdim=True)
 
+        d = Q.shape[-1]
+        scale = 1 / (d ** 0.5)
+
+        qk = einsum(Q, K, "... seq_q d, ... seq_k d -> ... seq_q seq_k") * scale
+        P = torch.exp(qk - L.unsqueeze(-1))
+        dV = einsum(P, grad_out, "... seq_q seq_k, ... seq_q d -> ... seq_k d")
+        dP = einsum(grad_out, V, "... seq_q d, ... seq_k d -> ... seq_q seq_k")
+        dS = P * (dP - D)
+        dQ = einsum(dS, K, "... seq_q seq_k, ... seq_k d -> ... seq_q d") * scale
+        dK = einsum(dS, Q, "... seq_q seq_k, ... seq_q d -> ... seq_k d") * scale
+        return dQ, dK, dV, None
 
 @triton.jit
 def fa2_fwd(
